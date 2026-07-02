@@ -157,6 +157,25 @@ function load(){ try{ return JSON.parse(localStorage.getItem('civ_teams')||'{}')
 function save(o){ localStorage.setItem('civ_teams',JSON.stringify(o)); }
 let cur=null, pickedChar=null;
 
+// ===== 雲端同步（跨裝置共用排行榜與破門名次）=====
+const SYNC='https://kvdb.io/BWBnc5FaEFL5eqBvM8bNQL/';
+let cloud={};   // 最近一次從雲端抓到的全部隊伍
+function cloudPush(){ if(!cur) return; const t=load()[cur]; if(!t) return;
+  try{ fetch(SYNC+encodeURIComponent(cur),{method:'POST',body:JSON.stringify(t)}); }catch(e){} }
+async function cloudPull(){ try{ const r=await fetch(SYNC+'?values=true&format=json');
+    if(!r.ok) return; const arr=await r.json(); const m={};
+    (arr||[]).forEach(pair=>{ try{ let k=pair[0], v=pair[1];
+      try{ k=decodeURIComponent(k); }catch(e){}
+      if(typeof v==='string') v=JSON.parse(v);
+      if(v && typeof v.act==='number') m[k]=v; }catch(e){} });
+    cloud=m; }catch(e){} }
+// 本機與雲端合併：同隊名取進度較新的（act 高者優先，再比錯誤數/完成狀態）
+function mergedDb(){ const local=load(), m={...cloud};
+  for(const k in local){ const a=local[k], b=m[k];
+    if(!b || a.act>b.act || (a.act===b.act && ((a.wrong||0)>(b.wrong||0) || (a.finish&&!b.finish)))) m[k]=a; }
+  return m; }
+cloudPull(); setInterval(cloudPull,8000);
+
 // ===== boot sequence (once per browser tab) =====
 (function boot(){
   const bootEl=document.getElementById('boot');
@@ -195,7 +214,7 @@ document.getElementById('loginGo').onclick=()=>{
   if(db[team]){ cur=team; }              // 繼續
   else{ if(!pickedChar){ lm.className='msg err'; lm.textContent='新隊伍請先選擇復興官。'; return; }
         db[team]={char:pickedChar,act:0,score:0,wrong:0,start:Date.now(),finish:null}; save(db); cur=team; }
-  enterGame();
+  cloudPush(); enterGame();
 };
 document.getElementById('logout').onclick=()=>{ cur=null; pickedChar=null; [...charsEl.children].forEach(c=>c.classList.remove('sel'));
   document.getElementById('team').value=''; document.getElementById('loginMsg').textContent='';
@@ -225,17 +244,17 @@ function submit(){
   const v=document.getElementById('ans').value.replace(/\D/g,''); const gm=document.getElementById('gMsg'); gm.className='msg';
   if(v.length!==4){ gm.className='msg err'; gm.textContent='請輸入 4 位數字。'; return; }
   const correct=ANS[t.char].a[t.act];
-  if(v!==correct){ beep(140,.25); t.wrong=(t.wrong||0)+1; db[cur]=t; save(db);
+  if(v!==correct){ beep(140,.25); t.wrong=(t.wrong||0)+1; db[cur]=t; save(db); cloudPush();
     gm.className='msg err'; gm.textContent='✗ 密碼錯誤，再檢查一次。（每錯一次，本關少 '+PEN+' 分）';
     const panel=document.getElementById('panel'); panel.classList.add('shake','flash-err'); document.body.classList.add('shake-screen');
     setTimeout(()=>{ panel.classList.remove('shake','flash-err'); document.body.classList.remove('shake-screen'); },500); return; }
   // correct
   const wrongThis = t._wrongAtAct ? (t.wrong - t._wrongAtAct) : t.wrong;
   const gain=Math.max(FLOOR, BASE - wrongThis*PEN);
-  // 這道門的破門名次（其他隊伍中已破過這道門的數量 +1）
-  const order=Object.entries(db).filter(([k,v])=>k!==cur && v.act>t.act).length+1;
+  // 這道門的破門名次（全班含雲端其他裝置，已破過這道門的隊伍數 +1）
+  const order=Object.entries(mergedDb()).filter(([k,v])=>k!==cur && v.act>t.act).length+1;
   const sbonus=DOOR_BONUS[order-1]||0;
-  t.score+=gain+sbonus; t.act+=1; t._wrongAtAct=t.wrong; db[cur]=t; save(db);
+  t.score+=gain+sbonus; t.act+=1; t._wrongAtAct=t.wrong; db[cur]=t; save(db); cloudPush();
   for(let k=0;k<3;k++) setTimeout(()=>beep(500+k*150,.07),k*70);
   const panel=document.getElementById('panel'); panel.classList.add('flash-ok'); setTimeout(()=>panel.classList.remove('flash-ok'),500);
   bumpScore(document.getElementById('gScore'),t.score); lightBurst();
@@ -243,7 +262,7 @@ function submit(){
     gm.textContent='✓ 門開了！＋'+gain+' 分'+(sbonus?'，⚡ 第 '+order+' 組破此門 +'+sbonus+' 分':'')+'。前往下一道門…';
     setTimeout(renderDoor,900); }
   else{ // finished all 3
-    t.finish=Date.now(); db[cur]=t; save(db);
+    t.finish=Date.now(); db[cur]=t; save(db); cloudPush();
     finishSeq(t.char,t.score,sbonus,order); }
 }
 
@@ -267,22 +286,30 @@ function finishSeq(name,score,bonus,order){
     setTimeout(()=>{ const a=document.getElementById('again'); a.classList.add('show'); a.onclick=()=>{ ov.style.display='none'; document.getElementById('logout').click(); }; },1700);
   }
 }
-function rankOf(team){ const fin=Object.entries(load()).filter(([k,v])=>v.finish).sort(cmp); return fin.findIndex(([k])=>k===team)+1; }
+function rankOf(team){ const fin=Object.entries(mergedDb()).filter(([k,v])=>v.finish).sort(cmp); return fin.findIndex(([k])=>k===team)+1; }
 function cmp(a,b){ a=a[1];b=b[1]; if(b.score!==a.score) return b.score-a.score; return (a.finish||9e15)-(b.finish||9e15); }
 
-// ===== leaderboard =====
-function openLB(){ const db=load(); const arr=Object.entries(db);
+// ===== leaderboard（雲端＋本機合併，開啟時每 5 秒自動更新）=====
+let lbTimer=null;
+function renderLB(){ const arr=Object.entries(mergedDb());
   const fin=arr.filter(([k,v])=>v.finish).sort(cmp); const ing=arr.filter(([k,v])=>!v.finish).sort((a,b)=>b[1].score-a[1].score);
   const tb=document.querySelector('#lbTable tbody'); tb.innerHTML='';
   if(!arr.length) tb.innerHTML='<tr><td colspan="6" style="color:#5d7f87">還沒有隊伍登入</td></tr>';
   fin.forEach(([k,v],i)=>{ const m=['🥇','🥈','🥉'][i]||('#'+(i+1)); const tm=v.finish?Math.round((v.finish-v.start)/60000):'';
-    tb.innerHTML+=`<tr><td>${m}</td><td>${k}</td><td>${ANS[v.char].ic} ${v.char}</td><td style="color:var(--green)">✔ 完成</td><td class="score">${v.score}</td><td>${tm} 分</td></tr>`; });
-  ing.forEach(([k,v])=>{ tb.innerHTML+=`<tr><td>—</td><td>${k}</td><td>${ANS[v.char].ic} ${v.char}</td><td>${v.act}/3 道門</td><td class="score">${v.score}</td><td>進行中</td></tr>`; });
+    tb.innerHTML+=`<tr><td>${m}</td><td>${k}</td><td>${ANS[v.char]?ANS[v.char].ic:''} ${v.char}</td><td style="color:var(--green)">✔ 完成</td><td class="score">${v.score}</td><td>${tm} 分</td></tr>`; });
+  ing.forEach(([k,v])=>{ tb.innerHTML+=`<tr><td>—</td><td>${k}</td><td>${ANS[v.char]?ANS[v.char].ic:''} ${v.char}</td><td>${v.act}/3 道門</td><td class="score">${v.score}</td><td>進行中</td></tr>`; });
+}
+function openLB(){ renderLB(); cloudPull().then(renderLB);
+  if(lbTimer) clearInterval(lbTimer);
+  lbTimer=setInterval(()=>cloudPull().then(renderLB),5000);
   document.getElementById('lb').style.display='block';
 }
 document.getElementById('lbBtn').onclick=openLB; document.getElementById('lbBtn2').onclick=openLB;
-function closeLB(){ document.getElementById('lb').style.display='none'; }
-function resetAll(){ if(confirm('確定清空所有隊伍紀錄？(重新開課用)')){ localStorage.removeItem('civ_teams'); closeLB(); if(cur){cur=null;document.getElementById('logout').click();} } }
+function closeLB(){ document.getElementById('lb').style.display='none'; if(lbTimer){clearInterval(lbTimer);lbTimer=null;} }
+function resetAll(){ if(confirm('確定清空所有隊伍紀錄？(重新開課用，會同時清掉雲端資料)')){
+  localStorage.removeItem('civ_teams');
+  Object.keys(cloud).forEach(k=>{ try{ fetch(SYNC+encodeURIComponent(k),{method:'POST',body:'0'}); }catch(e){} });
+  cloud={}; closeLB(); if(cur){cur=null;document.getElementById('logout').click();} } }
 
 // ===== fx =====
 const sc=document.getElementById('stars'),sx=sc.getContext('2d'); let stars=[];
