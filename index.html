@@ -96,7 +96,7 @@
     <!-- LOGIN -->
     <div id="login">
       <h1>◤ 文明復興・任務終端 ◢</h1>
-      <div class="sub">登入你的小隊，闖過三道邏輯之門，重啟世界。⚡ 越快全破，速度獎勵越高（+50／+30／+20）！</div>
+      <div class="sub">登入你的小隊，闖過三道邏輯之門，重啟世界。⚡ 每道門搶先破的組有速度獎勵（+30／+20／+10），但答錯會扣分——快，更要準！</div>
       <label>① 隊名（之後用同一個隊名繼續闖關）</label>
       <input type="text" id="team" placeholder="例：第 3 小隊" maxlength="16" autocomplete="off">
       <label>② 選擇你的復興官</label>
@@ -150,7 +150,7 @@ const DOORS=[
   {t:'第三道門・符文之門',d:'解開符號方程式、算出四個符號的值，輸入第三幕的 4 位密碼。'},
 ];
 const BASE=100, PEN=10, FLOOR=50;   // 每關基礎分、每錯一次扣分、最低分
-const SPEED_BONUS=[50,30,20];       // 全破名次獎勵：第1組+50、第2組+30、第3組+20，之後+0
+const DOOR_BONUS=[30,20,10];        // 每道門破門名次獎勵：該門第1組+30、第2組+20、第3組+10，之後+0
 
 // ===== state =====
 function load(){ try{ return JSON.parse(localStorage.getItem('civ_teams')||'{}'); }catch(e){ return {}; } }
@@ -232,18 +232,19 @@ function submit(){
   // correct
   const wrongThis = t._wrongAtAct ? (t.wrong - t._wrongAtAct) : t.wrong;
   const gain=Math.max(FLOOR, BASE - wrongThis*PEN);
-  t.score+=gain; t.act+=1; t._wrongAtAct=t.wrong; db[cur]=t; save(db);
+  // 這道門的破門名次（其他隊伍中已破過這道門的數量 +1）
+  const order=Object.entries(db).filter(([k,v])=>k!==cur && v.act>t.act).length+1;
+  const sbonus=DOOR_BONUS[order-1]||0;
+  t.score+=gain+sbonus; t.act+=1; t._wrongAtAct=t.wrong; db[cur]=t; save(db);
   for(let k=0;k<3;k++) setTimeout(()=>beep(500+k*150,.07),k*70);
   const panel=document.getElementById('panel'); panel.classList.add('flash-ok'); setTimeout(()=>panel.classList.remove('flash-ok'),500);
   bumpScore(document.getElementById('gScore'),t.score); lightBurst();
-  if(t.act<3){ gm.className='msg ok'; gm.textContent='✓ 門開了！＋'+gain+' 分。前往下一道門…';
+  if(t.act<3){ gm.className='msg ok';
+    gm.textContent='✓ 門開了！＋'+gain+' 分'+(sbonus?'，⚡ 第 '+order+' 組破此門 +'+sbonus+' 分':'')+'。前往下一道門…';
     setTimeout(renderDoor,900); }
-  else{ // finished all 3 — 依全破先後給名次獎勵
-    const order=Object.values(db).filter(x=>x.finish).length+1;
-    const bonus=SPEED_BONUS[order-1]||0;
-    t.score+=bonus; t.finish=Date.now(); db[cur]=t; save(db);
-    bumpScore(document.getElementById('gScore'),t.score);
-    finishSeq(t.char,t.score,bonus,order); }
+  else{ // finished all 3
+    t.finish=Date.now(); db[cur]=t; save(db);
+    finishSeq(t.char,t.score,sbonus,order); }
 }
 
 // ===== reboot finale =====
@@ -261,7 +262,7 @@ function finishSeq(name,score,bonus,order){
     const rank=rankOf(cur);
     setTimeout(()=>{ const e=document.getElementById('epi'); e.textContent=d.epi; e.classList.add('show'); },650);
     setTimeout(()=>{ const pz=document.getElementById('prize');
-      const spd=bonus>0?`⚡ 第 ${order} 組全破，速度獎勵 <b>+${bonus}</b> 分！<br>`:'';
+      const spd=bonus>0?`⚡ 第 ${order} 組打開最終之門，速度獎勵 <b>+${bonus}</b> 分！<br>`:'';
       pz.innerHTML=`${spd}🎁 完成！總分 <b>${score}</b> ・ 目前第 <b>${rank}</b> 名<br>「${name}」一脈，文明復興！`; pz.classList.add('show'); },1400);
     setTimeout(()=>{ const a=document.getElementById('again'); a.classList.add('show'); a.onclick=()=>{ ov.style.display='none'; document.getElementById('logout').click(); }; },1700);
   }
